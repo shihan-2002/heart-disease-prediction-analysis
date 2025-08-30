@@ -1,0 +1,589 @@
+---
+title: 'Predicting the Presence of Heart Disease Using Logistic Regression Model'
+author: "Shihan Wang"
+date: "2024-03-11"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("influence.ME")
+install.packages("mlmhelpr")
+install.packages("lmtest")
+install.packages("car", repos = "http://cran.us.r-project.org")
+install.packages("tidyverse") 
+library(tidyverse)
+library(car)
+library(lmtest)
+library(glmnet)
+library(survival)
+library(MASS)
+library(influence.ME)
+library(mlmhelpr)
+library(epiDisplay)
+library(openintro)
+```
+
+## The heart disease dataset
+```{r, eval=TRUE, echo = T}
+rm(list = ls())
+heart <- read.csv("~/Desktop/heart.csv", header = T)
+```
+
+## Check fo missing values and remove them
+```{r, eval=TRUE, echo = T}
+sapply(heart, function(x)sum(is.na(x)))
+heart_data <- na.omit(heart)
+```
+
+## Convert categorical variables to factor type
+```{r}
+factor_columns <- c('Sex', 'ChestPainType', 'RestingECG', 'ExerciseAngina', 'ST_Slope')
+heart_data[factor_columns] <- lapply(heart_data[factor_columns], as.factor)
+```
+
+## Summary of Heart Data
+```{r}
+summary(heart_data)
+```
+
+
+## EDA
+```{r}
+library(ggplot2)
+
+ggplot(data, aes(x=Cholesterol)) +
+  geom_histogram(binwidth = 5, fill="skyblue", alpha=0.7) +
+  geom_density(col="red", adjust=1.5, lwd=1) +
+  labs(title="Histogram of Cholesterol", x="Serum Cholesterol (mg/dL)", y="Frequency") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust=0.5))
+
+ggplot(data, aes(x=Oldpeak)) +
+  geom_histogram(binwidth = 0.5, fill="skyblue", alpha=0.7) +
+  geom_density(col="red", adjust=1.5, lwd=1) +
+  labs(title="Histogram of Oldpeak", x="ST Depression Induced by exercise relative to rest", y="Frequency") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust=0.5))
+```
+
+```{r}
+# Calculate the proportion of heart disease for each ST_Slope category
+st_slope_proportion <- aggregate(HeartDisease ~ ST_Slope, data = heart_data, mean)
+
+# Create the bar plot for ST_Slope
+ggplot(st_slope_proportion, aes(x = ST_Slope, y = HeartDisease, fill = ST_Slope)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Heart Disease by ST_Slope",
+       x = "ST_Slope",
+       y = "Proportion with Heart Disease") +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal()
+
+```
+
+```{r}
+# Calculate the proportion of heart disease for each ChestPainType category
+chest_pain_proportion <- aggregate(HeartDisease ~ ChestPainType, data = heart_data, mean)
+
+# Create the bar plot for ChestPainType
+ggplot(chest_pain_proportion, aes(x = ChestPainType, y = HeartDisease, fill = ChestPainType)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Heart Disease by ChestPainType",
+       x = "ChestPainType",
+       y = "Proportion with Heart Disease") +
+  scale_fill_brewer(palette = "Pastel2") +
+  theme_minimal()
+
+```
+
+```{r}
+# Assuming heart_data is your data frame and it contains 'FastingBS' and 'HeartDisease' columns.
+
+# Calculate the proportion of heart disease for each FastingBS category (0 for no, 1 for yes)
+fasting_bs_proportion <- aggregate(HeartDisease ~ FastingBS, data = heart_data, mean)
+
+# Create the bar plot for FastingBS
+ggplot(fasting_bs_proportion, aes(x = as.factor(FastingBS), y = HeartDisease, fill = as.factor(FastingBS))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Heart Disease by Fasting Blood Sugar",
+       x = "Fasting Blood Sugar > 120 mg/dl",
+       y = "Proportion with Heart Disease") +
+  scale_fill_manual(values = c("skyblue", "palegreen")) +
+  theme_minimal()
+
+```
+
+```{r}
+# Calculate the proportion of heart disease for each ExerciseAngina category
+exercise_angina_proportion <- aggregate(HeartDisease ~ ExerciseAngina, data = heart_data, mean)
+
+# Create the bar plot for ExerciseAngina
+ggplot(exercise_angina_proportion, aes(x = ExerciseAngina, y = HeartDisease, fill = ExerciseAngina)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Heart Disease by Exercise-Induced Angina",
+       x = "Exercise-Induced Angina",
+       y = "Proportion with Heart Disease") +
+  scale_fill_manual(values = c("skyblue", "palegreen")) +
+  theme_minimal()
+
+```
+
+### split data set into train set (70%) and test set (30%)
+```{r}
+set.seed(1007821975)
+
+sample <- sample(c(TRUE, FALSE), nrow(heart_data), replace=TRUE, prob=c(0.7,0.3))
+train <- heart_data[sample, ]
+test <- heart_data[!sample, ]
+```
+
+## Fit a logistic regression model with all variables
+```{r}
+logit.mod.full <- glm(HeartDisease ~ ., family = binomial(link = "logit"), data = train)
+summary(logit.mod.full)
+```
+
+## VIF
+```{r}
+vif(logit.mod.full)
+```
+
+## Goodness of Fit
+### AIC
+```{r}
+sel.var.aic <- step(logit.mod.full, trace = 0, k = 2, direction = "both") 
+select_var_aic<-attr(terms(sel.var.aic), "term.labels")   
+select_var_aic
+```
+
+```{r}
+logit.mod.aic <- glm(HeartDisease ~ Age + Sex + ChestPainType + Cholesterol + FastingBS + ExerciseAngina + Oldpeak + ST_Slope, family = binomial(link = "logit"), data = train)
+summary(logit.mod.aic)
+```
+
+```{r}
+# Residual Analysis
+res_dev_aic <- residuals(logit.mod.aic, type = "deviance")
+par(family = 'serif')
+# Add a lowess smooth curve to the plot
+plot(1:length(res_dev_aic), res_dev_aic, ylab = "Deviance Residuals", xlab = "Observation Number", main = "Plot of Deviance Residuals")
+abline(h = 0, lty = 'dotted', col = "red")
+lines(lowess(1:length(res_dev_aic), res_dev_aic), lwd = 2, col = "blue")
+
+# Influence Measures
+cooksd <- cooks.distance(logit.mod.aic)
+# Plot Cook's distance
+plot(cooksd, type = "h", main = "Cook's Distance")
+abline(h = 4 / length(cooksd), col = "red", lty = 2)
+
+# Goodness-of-Fit
+library(ResourceSelection)
+hosmerlem <- hoslem.test(logit.mod.aic$y, fitted(logit.mod.aic), g = 10)
+print(hosmerlem)
+
+library(rms)
+
+lrm.final <- lrm(HeartDisease ~ Age + Sex + ChestPainType + Cholesterol + FastingBS + ExerciseAngina + Oldpeak + ST_Slope, data = train, x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability")
+
+# ROC Analysis
+library(pROC)
+
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(train$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red')
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+
+# Multicollinearity
+library(car)
+vif(logit.mod.aic)
+
+# Model Selection Criteria
+AIC(logit.mod.aic)
+BIC(logit.mod.aic)
+
+# Confusion Matrix
+library(caret)
+predicted_classes <- ifelse(fitted(logit.mod.aic) > 0.5, 1, 0)
+confusionMatrix(as.factor(predicted_classes), as.factor(logit.mod.aic$y))
+```
+
+### BIC
+```{r}
+sel.var.bic <- step(logit.mod.full, trace = 0, k = log(nrow(train)), direction = "both") 
+select_var_bic<-attr(terms(sel.var.bic), "term.labels")   
+select_var_bic
+```
+
+```{r}
+logit.mod.bic <- glm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + ExerciseAngina + Oldpeak + ST_Slope, family = binomial(link = "logit"), data = train)
+summary(logit.mod.bic)
+```
+
+```{r}
+# Calculate the deviance residuals
+res_dev_bic <- residuals(logit.mod.bic, type = "deviance")
+par(family = 'serif')
+# Add a lowess smooth curve to the plot
+plot(1:length(res_dev_bic), res_dev_bic, ylab = "Deviance Residuals", xlab = "Observation Number", main = "Plot of Deviance Residuals")
+abline(h = 0, lty = 'dotted', col = "red")
+lines(lowess(1:length(res_dev_bic), res_dev_bic), lwd = 2, col = "blue")
+
+# Influence Measures
+cooksd <- cooks.distance(logit.mod.bic)
+# Plot Cook's distance
+plot(cooksd, type = "h", main = "Cook's Distance")
+abline(h = 4 / length(cooksd), col = "red", lty = 2)
+
+# Goodness-of-Fit
+library(ResourceSelection)
+hosmerlem <- hoslem.test(logit.mod.bic$y, fitted(logit.mod.bic), g = 10)
+print(hosmerlem)
+
+library(rms)
+
+lrm.final <- lrm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + ExerciseAngina + Oldpeak + ST_Slope, data = train, x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability")
+
+# ROC Analysis
+library(pROC)
+
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(train$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red')
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+
+# Multicollinearity
+library(car)
+vif(logit.mod.bic)
+
+# Model Selection Criteria
+AIC(logit.mod.bic)
+BIC(logit.mod.bic)
+
+# Confusion Matrix
+library(caret)
+predicted_classes <- ifelse(fitted(logit.mod.bic) > 0.5, 1, 0)
+confusionMatrix(as.factor(predicted_classes), as.factor(logit.mod.bic$y))
+```
+
+## Likelihood Ratio Test
+### Since the p-value is less than 0.05, you would reject the null hypothesis and conclude that including Age in Model 1 significantly improves the model's ability to explain the variability in HeartDisease compared to Model 2, which does not include Age.
+```{r}
+lrtest(logit.mod.aic, logit.mod.bic)
+```
+
+### Lasso
+```{r}
+set.seed(1007821975)
+train_data <- train %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.factor, as.numeric)
+
+x <- as.matrix(train_data[, -which(names(train_data) == "HeartDisease")])
+y <- as.numeric(train_data$HeartDisease)
+
+cv_lasso <- cv.glmnet(x, y, family = "binomial", type.measure = "class", alpha = 0.5)
+
+best.lambda <- cv_lasso$lambda.1se
+
+co <- coef(cv_lasso, s = "lambda.1se")
+
+thresh <- 0.00
+inds <- which(abs(co) > thresh )
+variables <- row.names(co)[inds]
+sel.var.lasso <- variables[!(variables %in% '(Intercept)')]
+sel.var.lasso
+```
+
+```{r}
+logit.mod.lasso <- glm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + MaxHR + ExerciseAngina + Oldpeak + ST_Slope, family = binomial(link = "logit"), data = train)
+summary(logit.mod.lasso)
+```
+
+```{r}
+# Residual Analysis
+res_dev_lasso <- residuals(logit.mod.lasso, type = "deviance")
+par(family = 'serif')
+# Add a lowess smooth curve to the plot
+plot(1:length(res_dev_lasso), res_dev_lasso, ylab = "Deviance Residuals", xlab = "Observation Number", main = "Plot of Deviance Residuals")
+abline(h = 0, lty = 'dotted', col = "red")
+lines(lowess(1:length(res_dev_lasso), res_dev_lasso), lwd = 2, col = "blue")
+
+# Influence Measures
+cooksd <- cooks.distance(logit.mod.lasso)
+# Plot Cook's distance
+plot(cooksd, type = "h", main = "Cook's Distance")
+abline(h = 4 / length(cooksd), col = "red", lty = 2)
+
+# Goodness-of-Fit
+library(ResourceSelection)
+hosmerlem <- hoslem.test(logit.mod.lasso$y, fitted(logit.mod.lasso), g = 10)
+print(hosmerlem)
+
+library(rms)
+
+lrm.final <- lrm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + MaxHR + ExerciseAngina + Oldpeak + ST_Slope, data = train, x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability")
+
+# ROC Analysis
+library(pROC)
+
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(train$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red', main = "AUC of The Lasso Model")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+
+# Multicollinearity
+library(car)
+vif(logit.mod.lasso)
+
+# Model Selection Criteria
+AIC(logit.mod.lasso)
+BIC(logit.mod.lasso)
+
+# Confusion Matrix
+library(caret)
+predicted_classes <- ifelse(fitted(logit.mod.lasso) > 0.5, 1, 0)
+confusionMatrix(as.factor(predicted_classes), as.factor(logit.mod.lasso$y))
+```
+
+## AUC of test set of the lasso model
+```{r}
+lrm.final.test <- lrm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + MaxHR + ExerciseAngina + Oldpeak + ST_Slope, data = test, x =TRUE, y = TRUE, model= T)
+
+p <- predict(lrm.final.test, type = "fitted")
+
+roc_logit_test <- roc(test$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit_test$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit_test$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red')
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit_test),2)))
+
+auc(roc_logit_test)
+```
+
+## Model Accuracy for AIC
+```{r}
+predicted_probs <- predict(logit.mod.aic, newdata = test, type = "response")
+
+predicted_class <- ifelse(predicted_probs > 0.5, 1, 0)
+
+actual_class <- test$HeartDisease
+
+accuracy <- mean(predicted_class == actual_class)
+
+accuracy
+```
+
+## Confusion Matrix
+```{r}
+library(caret)
+
+predicted_class_factor <- as.factor(predicted_class)
+actual_class_factor <- as.factor(actual_class)
+
+conf_matrix <- confusionMatrix(predicted_class_factor, actual_class_factor)
+print(conf_matrix)
+```
+
+## Model Accuracy for BIC
+```{r}
+predicted_probs <- predict(logit.mod.bic, newdata = test, type = "response")
+
+predicted_class <- ifelse(predicted_probs > 0.5, 1, 0)
+
+actual_class <- test$HeartDisease
+
+accuracy <- mean(predicted_class == actual_class)
+
+accuracy
+```
+
+## Confusion Matrix
+```{r}
+library(caret)
+
+predicted_class_factor <- as.factor(predicted_class)
+actual_class_factor <- as.factor(actual_class)
+
+conf_matrix <- confusionMatrix(predicted_class_factor, actual_class_factor)
+print(conf_matrix)
+```
+
+## Model Accuracy for LASSO
+```{r}
+predicted_probs <- predict(logit.mod.lasso, newdata = test, type = "response")
+
+predicted_class <- ifelse(predicted_probs > 0.5, 1, 0)
+
+actual_class <- test$HeartDisease
+
+accuracy <- mean(predicted_class == actual_class)
+
+accuracy
+```
+
+## Confusion Matrix
+```{r}
+library(caret)
+predicted_class_factor <- as.factor(predicted_class)
+actual_class_factor <- as.factor(actual_class)
+
+conf_matrix <- confusionMatrix(predicted_class_factor, actual_class_factor)
+print(conf_matrix)
+```
+
+## Model without confounders
+```{r}
+logit.mod.final <- glm(HeartDisease ~ ChestPainType + Cholesterol+ FastingBS + ExerciseAngina + Oldpeak + ST_Slope, family = binomial(link = "logit"), data = train)
+
+summary(logit.mod.final)
+```
+
+## AUC for train set of the final model
+```{r}
+lrm.final.test <- lrm(HeartDisease ~ ChestPainType + Cholesterol+ FastingBS + ExerciseAngina + Oldpeak + ST_Slope, data = train, x =TRUE, y = TRUE, model= T)
+
+p <- predict(lrm.final.test, type = "fitted")
+
+roc_logit_test <- roc(train$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit_test$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit_test$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red', main = "AUC for train set of the final model")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit_test),2)))
+
+auc(roc_logit_test)
+```
+
+## AUC for test set of the final model
+```{r}
+lrm.final.test <- lrm(HeartDisease ~ ChestPainType + Cholesterol+ FastingBS + ExerciseAngina + Oldpeak + ST_Slope, data = test, x =TRUE, y = TRUE, model= T)
+
+p <- predict(lrm.final.test, type = "fitted")
+
+roc_logit_test <- roc(test$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit_test$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit_test$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red', main = "AUC for test set of the final model")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit_test),2)))
+
+auc(roc_logit_test)
+```
+
+## Latex for the final model
+$$
+\begin{equation}
+\log\left(\frac{p}{1-p}\right) = \beta_0 + \beta_1 \times \text{ChestPainType} + \beta_2 \times \text{Cholesterol} + \beta_3 \times \text{FastingBS} + \\\
+\beta_4 \times \text{ExerciseAngina} + \beta_5 \times \text{Oldpeak} + \beta_6 \times \text{ST_Slope}
+\end{equation}
+$$
+
+## Diagnostic Analysis
+```{r}
+# Residual Analysis
+res_dev_final <- residuals(logit.mod.final, type = "deviance")
+par(family = 'serif')
+# Add a lowess smooth curve to the plot
+plot(1:length(res_dev_final), res_dev_final, ylab = "Deviance Residuals", xlab = "Observation Number", main = "Plot of Deviance Residuals of Final Model")
+abline(h = 0, lty = 'dotted', col = "red")
+lines(lowess(1:length(res_dev_final), res_dev_final), lwd = 2, col = "blue")
+
+# Influence Measures
+cooksd <- cooks.distance(logit.mod.final)
+# Plot Cook's distance
+plot(cooksd, type = "h", main = "Cook's Distance")
+abline(h = 4 / length(cooksd), col = "red", lty = 2)
+
+# Goodness-of-Fit
+library(ResourceSelection)
+hosmerlem <- hoslem.test(logit.mod.final$y, fitted(logit.mod.final), g = 10)
+print(hosmerlem)
+
+library(rms)
+
+lrm.final <- lrm(HeartDisease ~ Sex + ChestPainType + Cholesterol + FastingBS + MaxHR + ExerciseAngina + Oldpeak + ST_Slope, data = train, x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability", main = "Model calibration with cross-validation and bootstrap")
+
+# ROC Analysis
+library(pROC)
+
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(train$HeartDisease ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red', main = "AUC of The Final Model")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+
+# Multicollinearity
+library(car)
+vif(logit.mod.final)
+
+# Model Selection Criteria
+AIC(logit.mod.final)
+BIC(logit.mod.final)
+
+# Confusion Matrix
+library(caret)
+predicted_classes <- ifelse(fitted(logit.mod.lasso) > 0.5, 1, 0)
+confusionMatrix(as.factor(predicted_classes), as.factor(logit.mod.lasso$y))
+```
+
